@@ -1,18 +1,49 @@
-import asyncio
 import re
-from collections import deque
 from collections.abc import Callable
+import importlib
+from ast import literal_eval
 
 class CoreError(Exception):
-    """a forth error."""
+    """core error."""
 
 class CoreShutdown(Exception):
-    """forth is gracefully shutting down."""
+    """core is shutting down."""
+
+class CoreAwaitInput(Exception):
+    """core is stalled because it is waiting for input."""
 
 class word(str):
     """a forth word."""
 
-type value = word | int | float | str | Callable
+async def pyload(f):
+    name = f.pop()
+    try:
+        module = importlib.import_module(name)
+    except ModuleNotFoundError:
+        raise CoreError(f"module {name!r} not found.")
+
+    words = getattr(module, 'words', None)
+    if words is None:
+        raise CoreError(f"module {module.__name__} contains no words")
+    f.w.append(words)
+    post = getattr(module, 'post', None)
+    if post is not None:
+        f.put(post)
+
+
+class call:
+    def __init__(self, *contents, name=None):
+        self.name = name
+        self.contents = contents
+        self.idx = 0
+    def __repr__(self) -> str:
+        return f"{self.name or ''}{self.contents!r}"
+    def __next__(self):
+        if self.idx >= len(self.contents):
+            raise StopIteration()
+        x = self.contents[self.idx]
+        self.idx += 1
+        return x
 
 class fcore:
     """
@@ -20,23 +51,29 @@ class fcore:
     it defines no words
     it ingests a queue of values
     """
+    # TODO move compiler to preamble
     tokenize = staticmethod(re.compile(r"""\s+|(\d+\.\d*)|(\d+)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|(\S+)""").finditer)
-    cast = float, int, str, word
+    cast = float, int, literal_eval, word
     @staticmethod
     def compile(src:str):
-        # TODO raise error on failure to consume input, mismatched quotes
+        # TODO raise CoreError on failure to consume input, mismatched quotes
         return (
             fcore.cast[m.lastindex-1](m[m.lastindex])
             for m in fcore.tokenize(src) if m.lastindex
         )
-    def __init__(self):
+
+    def __init__(self, interactive=False):
         # definitions
-        self.w:list[dict[str,tuple]] = [{}]
-        # stack
+        # TODO move scopes to a separate mod
+        self.w:list[dict[str,tuple]] = [{
+            'pyload':(pyload,),
+            'style.prompt':('> ',),
+        }]
+        # data stack
         self.s = []
-        # instruction queue
-        self.i = deque()
-        self.has_work = asyncio.Event()
+        # call stack
+        self.c:list[call] = []
+        self.interactive = interactive
 
     # get/set/contains words
     def __getitem__(self, key):
@@ -51,42 +88,74 @@ class fcore:
         self.w[-1][key] = value
 
     # call word
-    def __call__(self, work):
-        self.i.extendleft(work)
+    def __call__(self, word:word|str):
+        """invoke a word"""
+        name = str(word)
+        self.put(*self[name], name=name)
 
     # get/put from instruction queue
     async def get(self):
-        if not self.i:
-            self.has_work.clear()
-            await self.has_work.wait()
-        return self.i.popleft()
-    async def put(self, value):
-        self.i.append(value)
-        self.has_work.set()
+        """get the next instruction off the call stack."""
+        i = None
+        while i is None:
+            if not self.c:
+                raise CoreAwaitInput()
+            if (i := next(self.c[-1], None)) is None:
+                self.c.pop()
+        return i
 
-    # push/pop from stack
+    def put(self, *values, name=''):
+        """add work to the call stack"""
+        if not values:
+            return
+        self.c.append(call(*values, name=name))
+
     def pop(self, index=-1):
+        """pop value from data stack"""
         try:
             return self.s.pop(index)
         except Exception:
             raise CoreError("stack underflow")
     def push(self, value):
+        """push value to data stack"""
         self.s.append(value)
 
     async def step(self):
+        """process then next instruction"""
         match (i := await self.get()):
             case word():
-                self(self[i])
+                self(i)
             case Callable():
                 await i(self)
-            case str() | int() | float():
-                self.s.append(i)
             case _:
-                raise CoreError(f"non-value of type {type(i)} in instruction stream.")
+                self.push(i)
+
+    async def accept_input(self) -> bool:
+        """accept input from the user. Return True if more input can be received"""
+        try:
+            src = input(''.join(self['style.prompt']))
+        except (EOFError, KeyboardInterrupt):
+            return False
+        self.put(*self.compile(src), name='user')
+        return True
+
+    def handle_error(self, e):
+        """handler for CoreError"""
+        raise e
 
     async def run(self):
+        """process instructions until shutdown received."""
         while True:
             try:
                 await self.step()
             except CoreShutdown:
                 break
+            except CoreError as e:
+                self.handle_error(e)
+            except CoreAwaitInput:
+                if not self.interactive or not await self.accept_input():
+                    break
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(fcore(interactive=True).run())

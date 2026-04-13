@@ -2,29 +2,10 @@
 a forth preamble in python
 """
 import asyncio
-import functools
-from collections.abc import Callable
-from core import CoreShutdown, CoreError
-import importlib
+from core import CoreShutdown
+from mod import definition
 
-words = {}
-
-def define(name:str|Callable, f:Callable|None=None):
-    """define a forth word"""
-    # sort out a decorator call
-    if callable(name):
-        name, f = name.__name__, name
-    if f is None:
-        return lambda f:define(name, f)
-    # ensure we're async
-    if asyncio.iscoroutinefunction(f):
-        final = f
-    else:
-        @functools.wraps(f)
-        async def final(forth):
-            return f(forth)
-    words[name] = (final,)
-    return final
+define = definition()
 
 @define(':')
 async def _(f):
@@ -47,13 +28,6 @@ async def query(f):
     if key in f:
         print(' '.join(str(v) for v in reversed(f[key])))
 
-@define
-def pyload(f):
-    module = importlib.import_module(f.pop())
-    words = getattr(module, 'words', None)
-    if words is None:
-        raise CoreError(f"pyload module {module.__name__} contains no words")
-    f.w.append(words)
 
 @define
 def load(f):
@@ -79,3 +53,4 @@ for k,v in {
         'depth':lambda f:f.push(len(f.s)),
 }.items():
     define(k, v)
+words = define

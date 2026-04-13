@@ -40,6 +40,24 @@ def munge(key:str, f:'Forth'):
 #
 is it possible to run a forth kernel (even very slowly) on a GPU?
 
+# TODO
+* need to add visualization
+    * PromptSession is an Application
+    * VSplit
+        * show call stack, highlight next word
+        * show data stack
+* debug module: breakpoint, RaiseError
+* preamble
+    * copy jonesforth preamble
+    * enable setting FileHistory
+* unify with viz?
+* apl module
+* forth in odin/rust/zig, to learn those?
+* the way words are resolved is not really very good. The traditional way is to use a linked list, which is actually pretty efficient (if you aren't also stuffing variables into the word dictionary). That way allows words to have pseudo-closure over old word definitions.
+* traditional forths usually have an assembler word, is it possible to replicate this by exposing python's eval? It would probably require more complex parsing, because of significant whitespace.
+* fork process, multicore forth (like TIS-100?)
+* properly finish units module
+
 # ref
 https://github.com/jdinunzio/pyforth/tree/master
 https://github.com/nornagon/jonesforth
